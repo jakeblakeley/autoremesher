@@ -1,0 +1,47 @@
+name: blender-extension
+
+on:
+  push:
+    branches:
+      - blender-addon
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    name: wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.0.1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  extension:
+    name: package extension zips
+    needs: wheels
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Package per-platform extension zips
+        run: python3 scripts/package_extension.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blender-extension
+          path: dist/autoremesher-*.zip

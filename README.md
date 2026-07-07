@@ -6,6 +6,11 @@ Buy me a coffee for staying up late coding :-) [![](https://www.paypalobjects.co
 
 <img width="3644" height="2202" alt="autoremesher-1 0-screenshot" src="https://github.com/user-attachments/assets/47851f1e-127c-49af-81b7-0c8ac06fb3ad" />
 
+## Blender Add-on
+
+The remeshing core is also available as a Blender extension — see
+[blender_addon/README.md](blender_addon/README.md).
+
 ## Getting Started
 
 These instructions will get you a copy of AutoRemesher up and running on your local machine for development and testing purposes.
