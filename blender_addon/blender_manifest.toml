@@ -1,0 +1,26 @@
+schema_version = "1.0.0"
+
+id = "autoremesher"
+version = "1.0.0"
+name = "AutoRemesher"
+tagline = "Automatic quad remeshing with sharp edge and smooth normal control"
+maintainer = "Jake Blakeley <jakeblakeley93@gmail.com>"
+type = "add-on"
+website = "https://github.com/huxingyi/autoremesher"
+tags = ["Mesh"]
+
+blender_version_min = "4.2.0"
+
+# The add-on code is GPL-3.0-or-later. The bundled autoremesher_core wheel is
+# built from MIT/BSD-3/MPL-2.0/Apache-2.0 sources (AutoRemesher, geogram,
+# Eigen, oneTBB) — all GPL-3 compatible.
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = [
+  "2020-2026 Jeremy HU / Dust3D Project",
+  "2026 AutoRemesher contributors",
+]
+
+platforms = ["windows-x64", "macos-arm64", "macos-x64", "linux-x64"]
+
+# Filled in by scripts/package_extension.py from the wheels present in dist/.
+wheels = []
