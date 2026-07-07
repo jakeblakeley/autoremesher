@@ -72,6 +72,10 @@ def main() -> None:
             f"No {args.python_tag} autoremesher_core wheels in {args.wheel_dir}")
 
     manifest_template = (ADDON_DIR / "blender_manifest.toml").read_text()
+    tagline = re.search(r'^tagline = "([^"]*)"', manifest_template, re.M).group(1)
+    if len(tagline) > 64 or tagline.endswith("."):
+        raise SystemExit(f"manifest tagline invalid (max 64 chars, no trailing "
+                         f"period): {len(tagline)} chars")
     version = re.search(r'^version = "([^"]+)"', manifest_template, re.M).group(1)
     addon_files = [p for p in ADDON_DIR.rglob("*")
                    if p.is_file() and p.name != "blender_manifest.toml"
