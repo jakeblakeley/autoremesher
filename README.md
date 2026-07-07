@@ -15,7 +15,31 @@ high-polygon meshes into clean quad-based topology. It is built on top of
 [Eigen](https://eigen.tuxfamily.org/), [oneTBB](https://github.com/uxlfoundation/oneTBB) and
 [others](ACKNOWLEDGEMENTS.html).
 
-<img width="3644" height="2202" alt="autoremesher-1 0-screenshot" src="https://github.com/user-attachments/assets/47851f1e-127c-49af-81b7-0c8ac06fb3ad" />
+| Original (903k triangles) | AutoRemesher result (~25k quads) |
+| :---: | :---: |
+| ![High-poly creature in Blender](docs/images/blender-original.png) | ![Quad-remeshed creature in Blender](docs/images/blender-remeshed.png) |
+
+## What the Blender fork adds
+
+- **N-panel UI** (3D Viewport → `N` → AutoRemesher) with the desktop app's
+  parameters: Target Quads, Edge Scaling, Sharp Edge, Smooth Normal, Adaptivity.
+- **Crash-proof and cancellable**: remeshing runs in a separate process of
+  Blender's bundled Python — a native crash becomes an error report instead of
+  taking Blender down, progress shows in the status bar, and `Esc` cancels.
+- **Preserve Thin Features**: medial-axis (local feature size) sizing keeps
+  claws, horns and spikes from being averaged away, at the cost of exceeding
+  the quad target on thin-feature-heavy meshes.
+- **Island Detail**: small disconnected parts (teeth, plates) are remeshed at
+  higher density — measured as quads across each part, so it adapts to size —
+  instead of collapsing into blobs.
+- **Weld Shells**: optional DynaMesh-style voxel preprocess that fuses
+  intersecting shells into one watertight surface before quad remeshing.
+- **No lost geometry**: islands that fail to quadrangulate keep their
+  triangles instead of being silently dropped, and failed islands are retried.
+- **Core fixes over upstream 1.0.0** (apply to the desktop app too): a
+  use-after-free crash in parallel island processing, out-of-bounds n-gon
+  output handling, a hard assertion on degenerate geometry turned into a
+  graceful skip, and input scale normalization.
 
 ## Installing the Blender extension
 
@@ -42,10 +66,6 @@ core can never take Blender down.
 - **This fork has only been tested on macOS (Apple Silicon) so far.** CI builds
   wheels and extension zips for Windows x64, Linux x64 and macOS x64 as well — they are
   untested, vibe-coded installs; if you try one, reports (and PRs) are very welcome.
-- Fork changes over upstream 1.0.0: Python bindings for the core (nanobind, stable ABI),
-  the Blender extension, per-island failure recovery (retry + keep-triangles fallback
-  instead of holes), input scale normalization, several crash/use-after-free fixes, and
-  n-gon-aware output. See the commit history on the `blender-addon` branch for details.
 
 ### Building the extension locally
 
