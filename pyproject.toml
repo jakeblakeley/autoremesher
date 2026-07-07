@@ -26,6 +26,9 @@ wheel.py-api = "cp312"
 # covers Blender 5.1+ (Python 3.13) and any future Python bump.
 [tool.cibuildwheel]
 build = ["cp311-*", "cp312-*"]
+# geogram's stack-trace support needs execinfo.h, which musl lacks — and
+# Blender only ships glibc Linux builds anyway.
+skip = ["*-musllinux*"]
 build-verbosity = 1
 test-command = "python -c \"import autoremesher_core; print(autoremesher_core.Remesher)\""
 
