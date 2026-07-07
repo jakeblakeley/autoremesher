@@ -257,6 +257,39 @@ namespace GEO {
 			if(v2c[v] == NO_CORNER) {
 			    continue;
 			}
+			//   On degenerate input, the rotations around a
+			// vertex marked non-singular may not compose to
+			// identity (this used to be a hard geo_assert
+			// below). Walk the wheel first and skip the
+			// constraint for such vertices instead of failing
+			// the whole parameterization.
+			{
+			    index_t c = v2c[v];
+			    index_t r = 0;
+			    do {
+				r = (r + R[c]) % 4;
+				index_t f =
+				    mesh->facet_corners.adjacent_facet(c);
+				geo_assert(f != NO_FACET);
+				index_t next_c = NO_CORNER;
+				for(
+				    next_c = mesh->facets.corners_begin(f);
+				    next_c<mesh->facets.corners_end(f);
+				    ++next_c
+				) {
+				    if(mesh->facet_corners.vertex(next_c)==v) {
+					break;
+				    }
+				}
+				geo_assert(
+				    mesh->facet_corners.vertex(next_c) == v
+				);
+				c = next_c;
+			    } while(c != v2c[v]);
+			    if(r != 0) {
+				continue;
+			    }
+			}
 			//   Enforce the constraint on the wheel
 			// neighborhood for each component of the Tijs.
 			FOR(coord, 2) {

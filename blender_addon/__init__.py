@@ -231,21 +231,23 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
             return False
         data = np.load(self._out_path, allow_pickle=False)
         remeshed_vertices = data["vertices"]
-        remeshed_quads = data["quads"]
-        quad_count = remeshed_quads.shape[0]
-        if quad_count == 0:
+        # Mostly quads, but hole fixing can emit triangles up to 7-gons.
+        face_indices = data["face_indices"].astype(np.int32)
+        face_sizes = data["face_sizes"].astype(np.int32)
+        face_count = face_sizes.shape[0]
+        if face_count == 0:
             return False
 
         mesh = bpy.data.meshes.new(f"{self._source_name} Remesh")
         mesh.vertices.add(remeshed_vertices.shape[0])
         mesh.vertices.foreach_set("co", remeshed_vertices.astype(np.float32).ravel())
-        mesh.loops.add(quad_count * 4)
-        mesh.loops.foreach_set("vertex_index", remeshed_quads.astype(np.int32).ravel())
-        mesh.polygons.add(quad_count)
-        mesh.polygons.foreach_set(
-            "loop_start", np.arange(0, quad_count * 4, 4, dtype=np.int32))
-        mesh.polygons.foreach_set(
-            "loop_total", np.full(quad_count, 4, dtype=np.int32))
+        mesh.loops.add(face_indices.shape[0])
+        mesh.loops.foreach_set("vertex_index", face_indices)
+        mesh.polygons.add(face_count)
+        loop_start = np.zeros(face_count, dtype=np.int32)
+        np.cumsum(face_sizes[:-1], out=loop_start[1:])
+        mesh.polygons.foreach_set("loop_start", loop_start)
+        mesh.polygons.foreach_set("loop_total", face_sizes)
         mesh.validate()
         mesh.update(calc_edges=True)
 
@@ -263,7 +265,9 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
             obj.select_set(False)
         result.select_set(True)
         context.view_layer.objects.active = result
-        self.report({'INFO'}, f"Remeshed to {quad_count} quads")
+        quad_count = int((face_sizes == 4).sum())
+        self.report({'INFO'},
+                    f"Remeshed to {face_count} faces ({quad_count} quads)")
         return True
 
     def _remove_temp_files(self):

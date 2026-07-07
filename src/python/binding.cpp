@@ -48,7 +48,7 @@ void ensureGeogramInitialized()
 }
 
 using VertexArray = nb::ndarray<nb::numpy, double, nb::shape<-1, 3>, nb::c_contig, nb::device::cpu>;
-using FaceArray = nb::ndarray<nb::numpy, uint32_t, nb::shape<-1, 4>, nb::c_contig, nb::device::cpu>;
+using IndexArray = nb::ndarray<nb::numpy, uint32_t, nb::shape<-1>, nb::c_contig, nb::device::cpu>;
 
 // Wraps AutoRemesher::AutoRemesher for use from a Python worker thread:
 // run() blocks with the GIL released while progress/status stay readable
@@ -128,15 +128,32 @@ public:
         return VertexArray(data, { m_resultVertices.size(), 3 }, owner);
     }
 
-    FaceArray quads() const
+    // The extractor emits mostly quads but also triangles and up to 7-gons
+    // (hole fixing), so faces are returned as a flat index array plus a
+    // per-face vertex-count array.
+    IndexArray faceIndices() const
     {
         requireFinished();
-        uint32_t* data = new uint32_t[m_resultQuads.size() * 4];
-        for (size_t i = 0; i < m_resultQuads.size(); ++i)
-            for (size_t j = 0; j < 4; ++j)
-                data[i * 4 + j] = static_cast<uint32_t>(m_resultQuads[i][j]);
+        size_t total = 0;
+        for (const auto& face : m_resultQuads)
+            total += face.size();
+        uint32_t* data = new uint32_t[total];
+        size_t offset = 0;
+        for (const auto& face : m_resultQuads)
+            for (const auto& index : face)
+                data[offset++] = static_cast<uint32_t>(index);
         nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<uint32_t*>(p); });
-        return FaceArray(data, { m_resultQuads.size(), 4 }, owner);
+        return IndexArray(data, { total }, owner);
+    }
+
+    IndexArray faceSizes() const
+    {
+        requireFinished();
+        uint32_t* data = new uint32_t[m_resultQuads.size()];
+        for (size_t i = 0; i < m_resultQuads.size(); ++i)
+            data[i] = static_cast<uint32_t>(m_resultQuads[i].size());
+        nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<uint32_t*>(p); });
+        return IndexArray(data, { m_resultQuads.size() }, owner);
     }
 
 private:
@@ -192,5 +209,8 @@ NB_MODULE(autoremesher_core, m)
         .def_prop_ro("status", &Remesher::status,
             "Human-readable status of the current stage.")
         .def("vertices", &Remesher::vertices, "Remeshed vertices, float64 (n, 3).")
-        .def("quads", &Remesher::quads, "Remeshed quads, uint32 (m, 4).");
+        .def("face_indices", &Remesher::faceIndices,
+            "Flat uint32 array of all face vertex indices, concatenated per face.")
+        .def("face_sizes", &Remesher::faceSizes,
+            "uint32 array with the vertex count of each face (3-7, mostly 4).");
 }

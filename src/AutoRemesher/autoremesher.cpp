@@ -26,6 +26,7 @@
 #include <AutoRemesher/QuadExtractor>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <geogram_report_progress.h>
 #include <iostream>
 #include <limits>
@@ -140,6 +141,37 @@ struct ReportProgressContext {
     size_t islandIndex;
     AutoRemesher* autoRemesher;
 };
+
+// A collapsed UV region extracts into a fan of quads converging on one hub
+// vertex (valences in the hundreds); legitimate extraordinary vertices stay
+// far below this. Also rejects out-of-range indices and non-finite positions.
+static bool isIslandResultHealthy(QuadExtractor& extractor)
+{
+    constexpr size_t kMaxReasonableValence = 50;
+    const auto& vertices = extractor.remeshedVertices();
+    const auto& quads = extractor.remeshedQuads();
+    for (const auto& vertex : vertices) {
+        if (!std::isfinite(vertex.x()) || !std::isfinite(vertex.y()) || !std::isfinite(vertex.z())) {
+            std::cerr << "Island result rejected: non-finite vertex position" << std::endl;
+            return false;
+        }
+    }
+    std::vector<size_t> valence(vertices.size(), 0);
+    for (const auto& quad : quads) {
+        for (const auto& index : quad) {
+            if (index >= vertices.size()) {
+                std::cerr << "Island result rejected: quad index out of range" << std::endl;
+                return false;
+            }
+            if (++valence[index] > kMaxReasonableValence) {
+                std::cerr << "Island result rejected: vertex valence exceeds "
+                          << kMaxReasonableValence << " (degenerate hub)" << std::endl;
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 static void ReportProgress(void* tag, float progress)
 {
@@ -533,38 +565,72 @@ bool AutoRemesher::remesh()
                 thread.autoRemesher->setCurrentStatus(
                     "Island " + std::to_string(thread.islandIndex + 1) + ": computing normals & frame field...");
                 thread.autoRemesher->updateProgress(thread.islandIndex, 0.3f);
-                thread.parameterizer = new Parameterizer(&vertices,
-                    &triangles,
-                    nullptr);
-                thread.parameterizer->setScaling(thread.island->scaling);
-                thread.parameterizer->setGradientAdaptivity(thread.island->adaptivity);
-                thread.parameterizer->setSharpEdgeDegrees(thread.island->sharpEdgeDegrees);
-                {
-                    GeogramProgressLockGuard lock;
-                    thread.parameterizer->parameterize();
-                }
 
-                auto t1 = std::chrono::high_resolution_clock::now();
+                // On marginal geometry the parameterization can fail an
+                // internal geogram assertion, or "succeed" with a collapsed
+                // UV region that extracts into a garbage fan of quads around
+                // a single hub vertex. Both outcomes are nondeterministic
+                // (the solver's parallel reductions change the float rounding
+                // per run), so retry the island a few times and validate the
+                // result before accepting it; a persistently failing island
+                // is skipped rather than failing the whole remesh.
+                constexpr int kMaxIslandAttempts = 3;
+                auto t1 = t0;
+                for (int attempt = 0;; ++attempt) {
+                    std::vector<std::vector<Vector2>>* uvs = nullptr;
+                    try {
+                        thread.parameterizer = new Parameterizer(&vertices,
+                            &triangles,
+                            nullptr);
+                        thread.parameterizer->setScaling(thread.island->scaling);
+                        thread.parameterizer->setGradientAdaptivity(thread.island->adaptivity);
+                        thread.parameterizer->setSharpEdgeDegrees(thread.island->sharpEdgeDegrees);
+                        {
+                            GeogramProgressLockGuard lock;
+                            thread.parameterizer->parameterize();
+                        }
+
+                        t1 = std::chrono::high_resolution_clock::now();
+
+                        thread.autoRemesher->setCurrentStatus(
+                            "Island " + std::to_string(thread.islandIndex + 1) + ": extracting quads...");
+                        thread.autoRemesher->updateProgress(thread.islandIndex, 0.9f);
+                        uvs = thread.parameterizer->takeTriangleUvs();
+                        thread.remesher = new QuadExtractor(&vertices,
+                            &triangles,
+                            uvs);
+                        if (!thread.remesher->extract() || !isIslandResultHealthy(*thread.remesher)) {
+                            delete thread.remesher;
+                            thread.remesher = nullptr;
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "Island " << (thread.islandIndex + 1)
+                                  << ": parameterization failed: " << e.what() << std::endl;
+                        delete thread.remesher;
+                        thread.remesher = nullptr;
+                    }
+                    delete uvs;
+                    if (nullptr != thread.remesher || attempt + 1 >= kMaxIslandAttempts)
+                        break;
+                    delete thread.parameterizer;
+                    thread.parameterizer = nullptr;
+                    std::cerr << "Island " << (thread.islandIndex + 1)
+                              << ": retrying (attempt " << (attempt + 2) << " of "
+                              << kMaxIslandAttempts << ")" << std::endl;
+                    thread.autoRemesher->setCurrentStatus(
+                        "Island " + std::to_string(thread.islandIndex + 1) + ": retrying...");
+                }
+                if (nullptr == thread.remesher) {
+                    std::cerr << "Island " << (thread.islandIndex + 1)
+                              << ": giving up after " << kMaxIslandAttempts
+                              << " attempts, skipping" << std::endl;
+                }
                 *m_parameterizeTime += std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-
-                thread.autoRemesher->setCurrentStatus(
-                    "Island " + std::to_string(thread.islandIndex + 1) + ": extracting quads...");
-                thread.autoRemesher->updateProgress(thread.islandIndex, 0.9f);
-                std::vector<std::vector<Vector2>>* uvs = thread.parameterizer->takeTriangleUvs();
-                thread.remesher = new QuadExtractor(&vertices,
-                    &triangles,
-                    uvs);
-                if (!thread.remesher->extract()) {
-                    delete thread.remesher;
-                    thread.remesher = nullptr;
-                }
                 thread.autoRemesher->updateProgress(thread.islandIndex, 1.0f);
                 thread.autoRemesher->setCurrentStatus(
                     "Island " + std::to_string(thread.islandIndex + 1) + ": done");
                 auto t2 = std::chrono::high_resolution_clock::now();
                 *m_extractTime += std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-
-                delete uvs;
 
                 // reportProgressContext dies with this iteration, but this
                 // worker thread can later steal quad_cover's inner TBB tasks
@@ -595,23 +661,32 @@ bool AutoRemesher::remesh()
         m_progressHandler(m_tag, 0.95f, "Merging mesh islands...");
     for (size_t i = 0; i < parameterizationThreads.size(); ++i) {
         auto& thread = parameterizationThreads[i];
-        if (nullptr == thread.remesher)
+        bool remeshed = nullptr != thread.remesher && !thread.remesher->remeshedQuads().empty();
+        // An island whose parameterization failed keeps its (isotropically
+        // resampled) triangles: a triangulated patch in the result beats a
+        // missing piece of the model.
+        const auto& vertices = remeshed ? thread.remesher->remeshedVertices()
+                                        : thread.island->vertices;
+        const auto& faces = remeshed ? thread.remesher->remeshedQuads()
+                                     : thread.island->triangles;
+        if (faces.empty())
             continue;
-        const auto& quads = thread.remesher->remeshedQuads();
-        if (quads.empty())
-            continue;
-        const auto& vertices = thread.remesher->remeshedVertices();
+        if (!remeshed) {
+            std::cerr << "Island " << (thread.islandIndex + 1)
+                      << ": keeping original triangles ("
+                      << faces.size() << ")" << std::endl;
+        }
         size_t vertexStartIndex = m_remeshedVertices.size();
         m_remeshedVertices.reserve(m_remeshedVertices.size() + vertices.size());
         for (const auto& it : vertices) {
             m_remeshedVertices.push_back(it);
         }
-        for (const auto& it : quads) {
-            std::vector<size_t> quad;
-            quad.reserve(it.size());
+        for (const auto& it : faces) {
+            std::vector<size_t> face;
+            face.reserve(it.size());
             for (const auto& v : it)
-                quad.push_back(vertexStartIndex + v);
-            m_remeshedQuads.push_back(quad);
+                face.push_back(vertexStartIndex + v);
+            m_remeshedQuads.push_back(face);
         }
     }
 

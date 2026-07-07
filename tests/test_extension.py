@@ -42,9 +42,17 @@ assert result == {'FINISHED'}, f"operator returned {result}"
 remeshed = bpy.context.view_layer.objects.active
 assert remeshed is not None and remeshed.name != suzanne.name, "no new object created"
 mesh = remeshed.data
-quad_faces = sum(1 for p in mesh.polygons if len(p.vertices) == 4)
+sizes = [len(p.vertices) for p in mesh.polygons]
+quad_faces = sum(1 for s in sizes if s == 4)
 print(f"result {remeshed.name!r}: {len(mesh.vertices)} verts, "
       f"{len(mesh.polygons)} faces ({quad_faces} quads)")
 assert len(mesh.polygons) > 100, "suspiciously few faces"
-assert quad_faces == len(mesh.polygons), "non-quad faces in output"
+# Mostly quads; hole fixing can add triangles up to 7-gons.
+assert quad_faces / len(mesh.polygons) > 0.5, "output is not quad-dominant"
+assert max(sizes) <= 7, f"unexpected {max(sizes)}-gon in output"
+# A vertex shared by a huge number of faces means degenerate hub geometry.
+import numpy as np
+loops = np.zeros(len(mesh.loops), dtype=np.int32)
+mesh.loops.foreach_get("vertex_index", loops)
+assert np.bincount(loops).max() < 50, "degenerate hub vertex in output"
 print("BLENDER E2E TEST PASSED")

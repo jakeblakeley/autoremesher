@@ -47,7 +47,9 @@ def main() -> int:
         print("REMESH FAILED", flush=True)
         return 2
 
-    np.savez(out_path, vertices=remesher.vertices(), quads=remesher.quads())
+    np.savez(out_path, vertices=remesher.vertices(),
+             face_indices=remesher.face_indices(),
+             face_sizes=remesher.face_sizes())
     print("PROGRESS 1.0 Done", flush=True)
     return 0
 
