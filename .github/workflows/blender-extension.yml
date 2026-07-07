@@ -3,6 +3,7 @@ name: blender-extension
 on:
   push:
     branches:
+      - master
       - blender-addon
   workflow_dispatch:
 

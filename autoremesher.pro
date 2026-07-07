@@ -102,6 +102,9 @@ win32 {
 
 DEFINES += _USE_MATH_DEFINES
 DEFINES += NOMINMAX
+# Enables geogram's parallel Delaunay backend, needed by the
+# local-feature-size (thin feature preservation) analysis.
+DEFINES += GEOGRAM_WITH_PDEL
 
 # Qt's qyieldcpu.h calls the __yield ARM builtin without including
 # <arm_acle.h>. Since clang 16, -Wimplicit-function-declaration is an error by
