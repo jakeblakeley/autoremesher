@@ -55,13 +55,29 @@ class AutoRemesherSettings(bpy.types.PropertyGroup):
         subtype='FACTOR',
         default=1.0, min=0.0, max=1.0,
     )
-    min_island_quads: bpy.props.IntProperty(
-        name="Island Detail Floor",
-        description="Minimum quads for each small disconnected part (teeth, "
-        "spikes). Small islands are remeshed at higher density so they keep "
-        "their shape instead of collapsing into blobs; never adds more detail "
-        "than the original part had. 0 disables",
-        default=32, min=0, max=2000,
+    island_detail: bpy.props.IntProperty(
+        name="Island Detail",
+        description="Minimum quads across each small disconnected part "
+        "(teeth, spikes), measured across the part's diagonal so it adapts "
+        "to the part's size. Small parts are remeshed at higher density so "
+        "they keep their shape instead of collapsing into blobs; never adds "
+        "more detail than the original part had. 0 disables",
+        default=10, min=0, max=100,
+    )
+    preserve_thin: bpy.props.BoolProperty(
+        name="Preserve Thin Features",
+        description="Use finer quads on thin features (claws, horns) based "
+        "on the distance to the mesh's medial axis, so they keep their shape "
+        "instead of being averaged away",
+        default=True,
+    )
+    weld_shells: bpy.props.BoolProperty(
+        name="Weld Shells",
+        description="Voxel-remesh the input first (like ZBrush's DynaMesh) "
+        "to fuse intersecting parts into one watertight surface before quad "
+        "remeshing. Helps kitbashed meshes where teeth/plates float as "
+        "separate shells; interior geometry is removed",
+        default=False,
     )
 
 
@@ -100,6 +116,59 @@ class _Job:
     def cancel(self):
         if self.process.poll() is None:
             self.process.terminate()
+
+
+def _mesh_to_arrays(mesh):
+    mesh.calc_loop_triangles()
+    triangle_count = len(mesh.loop_triangles)
+    vertices = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", vertices)
+    triangles = np.empty(triangle_count * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get("vertices", triangles)
+    return (vertices.reshape(-1, 3).astype(np.float64),
+            triangles.reshape(-1, 3).astype(np.uint32))
+
+
+def _weld_shells(context, vertices, triangles, target_quad_count):
+    """Voxel-remesh the input into one watertight surface (DynaMesh-style),
+    fusing intersecting shells before quad remeshing."""
+    corners = vertices[triangles]
+    area = np.linalg.norm(
+        np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]),
+        axis=1).sum() / 2.0
+    # Half the target quad edge length, bounded so the voxel grid stays sane.
+    edge = math.sqrt(max(area, 1e-12) / (0.866 * 0.5 * target_quad_count * 2))
+    extent = float((vertices.max(axis=0) - vertices.min(axis=0)).max())
+    voxel = max(edge * 0.5, extent / 700.0, 1e-6)
+
+    mesh = bpy.data.meshes.new("autoremesher_weld")
+    mesh.vertices.add(vertices.shape[0])
+    mesh.vertices.foreach_set("co", vertices.astype(np.float32).ravel())
+    mesh.loops.add(triangles.size)
+    mesh.loops.foreach_set("vertex_index", triangles.astype(np.int32).ravel())
+    mesh.polygons.add(triangles.shape[0])
+    mesh.polygons.foreach_set(
+        "loop_start", np.arange(0, triangles.size, 3, dtype=np.int32))
+    mesh.polygons.foreach_set(
+        "loop_total", np.full(triangles.shape[0], 3, dtype=np.int32))
+    mesh.validate()
+    mesh.update()
+
+    temp = bpy.data.objects.new("autoremesher_weld", mesh)
+    context.collection.objects.link(temp)
+    try:
+        modifier = temp.modifiers.new("weld", 'REMESH')
+        modifier.mode = 'VOXEL'
+        modifier.voxel_size = voxel
+        depsgraph = context.evaluated_depsgraph_get()
+        eval_temp = temp.evaluated_get(depsgraph)
+        welded_mesh = eval_temp.to_mesh()
+        welded = _mesh_to_arrays(welded_mesh)
+        eval_temp.to_mesh_clear()
+    finally:
+        bpy.data.objects.remove(temp)
+        bpy.data.meshes.remove(mesh)
+    return welded
 
 
 def _worker_command(vertices, triangles, params):
@@ -150,31 +219,31 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
         depsgraph = context.evaluated_depsgraph_get()
         eval_obj = obj.evaluated_get(depsgraph)
         mesh = eval_obj.to_mesh()
-        mesh.calc_loop_triangles()
+        vertices, triangles = _mesh_to_arrays(mesh)
+        eval_obj.to_mesh_clear()
 
-        triangle_count = len(mesh.loop_triangles)
-        if triangle_count == 0:
-            eval_obj.to_mesh_clear()
+        if triangles.shape[0] == 0:
             self.report({'ERROR'}, "Mesh has no faces")
             return {'CANCELLED'}
 
-        vertices = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
-        mesh.vertices.foreach_get("co", vertices)
-        triangles = np.empty(triangle_count * 3, dtype=np.int32)
-        mesh.loop_triangles.foreach_get("vertices", triangles)
-        eval_obj.to_mesh_clear()
+        if settings.weld_shells:
+            vertices, triangles = _weld_shells(
+                context, vertices, triangles, settings.target_quad_count)
+            if triangles.shape[0] == 0:
+                self.report({'ERROR'}, "Weld Shells produced an empty mesh")
+                return {'CANCELLED'}
 
         params = {
             "target_quad_count": settings.target_quad_count,
-            "min_island_quad_count": settings.min_island_quads,
+            "island_detail_spans": settings.island_detail,
+            "feature_size_factor": 1.0 if settings.preserve_thin else 0.0,
             "scaling": settings.edge_scaling,
             "adaptivity": settings.adaptivity,
             "sharp_edge_degrees": math.degrees(settings.sharp_edge),
             "smooth_normal_degrees": math.degrees(settings.smooth_normal),
         }
         command, env, self._in_path, self._out_path = _worker_command(
-            vertices.reshape(-1, 3).astype(np.float64),
-            triangles.reshape(-1, 3).astype(np.uint32), params)
+            vertices, triangles, params)
         self._source_name = obj.name
 
         if bpy.app.background:
@@ -315,7 +384,11 @@ class VIEW3D_PT_autoremesher(bpy.types.Panel):
         column.prop(settings, "sharp_edge")
         column.prop(settings, "smooth_normal")
         column.prop(settings, "adaptivity")
-        column.prop(settings, "min_island_quads")
+
+        column = layout.column(align=True)
+        column.prop(settings, "island_detail")
+        column.prop(settings, "preserve_thin")
+        column.prop(settings, "weld_shells")
 
         if _active_job is not None:
             box = layout.box()

@@ -27,9 +27,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <geogram/basic/command_line.h>
+#include <geogram/basic/command_line_args.h>
+#include <geogram/delaunay/LFS.h>
+#include <geogram/points/nn_search.h>
 #include <geogram_report_progress.h>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <queue>
 #include <thread>
 // Qt defines `emit` as a macro, which collides with TBB profiling.h's `void emit()`.
@@ -230,15 +235,18 @@ void AutoRemesher::resample(std::vector<Vector3>& vertices,
     double adaptivity,
     double sharpEdgeDegrees,
     double smoothNormalDegrees,
-    size_t islandIndex)
+    size_t islandIndex,
+    const GEO::NearestNeighborSearch* poleSearch,
+    const double* polePoints,
+    double featureSizeFactor)
 {
     std::vector<double> vertexTargetLengths;
-    if (adaptivity > 0.0 && !vertices.empty()) {
-        const double isoAdaptivity = adaptivity;
-        const double minRatio = 0.3;
-        const double maxRatio = 3.0;
+    const bool clampByFeatureSize = nullptr != poleSearch && nullptr != polePoints
+        && featureSizeFactor > 0 && !vertices.empty();
 
-        std::vector<Vector3> normals(vertices.size());
+    std::vector<Vector3> normals;
+    if ((adaptivity > 0.0 || clampByFeatureSize) && !vertices.empty()) {
+        normals.resize(vertices.size());
         tbb::parallel_for(tbb::blocked_range<size_t>(0, triangles.size()),
             [&](const tbb::blocked_range<size_t>& range) {
                 for (size_t i = range.begin(); i != range.end(); ++i) {
@@ -255,6 +263,12 @@ void AutoRemesher::resample(std::vector<Vector3>& vertices,
                 for (size_t i = range.begin(); i != range.end(); ++i)
                     normals[i].normalize();
             });
+    }
+
+    if (adaptivity > 0.0 && !vertices.empty()) {
+        const double isoAdaptivity = adaptivity;
+        const double minRatio = 0.3;
+        const double maxRatio = 3.0;
 
         std::vector<std::vector<size_t>> faceAroundVertex(vertices.size());
         for (size_t i = 0; i < triangles.size(); ++i) {
@@ -314,6 +328,73 @@ void AutoRemesher::resample(std::vector<Vector3>& vertices,
                     }
                 });
         }
+    }
+
+    // Local-feature-size sizing (Alliez et al. style): clamp the target
+    // edge length by the distance to the medial axis so thin features
+    // (claws, horns) keep edges across their thickness instead of being
+    // averaged away. Only poles on the inner side of the surface count —
+    // for kitbashed input the medial axis also runs through every gap
+    // between shells, and refining those contact regions would blow the
+    // quad budget. Bounded below by the input's own local edge length (no
+    // point resampling finer than the source) and by a fraction of the
+    // global edge length.
+    if (clampByFeatureSize) {
+        if (vertexTargetLengths.empty())
+            vertexTargetLengths.assign(vertices.size(), voxelSize);
+
+        std::vector<double> localEdgeLengthSums(vertices.size(), 0.0);
+        std::vector<size_t> localEdgeCounts(vertices.size(), 0);
+        for (const auto& triangle : triangles) {
+            for (size_t i = 0; i < 3; ++i) {
+                size_t j = (i + 1) % 3;
+                double edgeLength = (vertices[triangle[i]] - vertices[triangle[j]]).length();
+                localEdgeLengthSums[triangle[i]] += edgeLength;
+                localEdgeLengthSums[triangle[j]] += edgeLength;
+                localEdgeCounts[triangle[i]] += 1;
+                localEdgeCounts[triangle[j]] += 1;
+            }
+        }
+
+        const double lowerBound = voxelSize * 0.25;
+        const GEO::index_t neighborCount = std::min(
+            (GEO::index_t)8, poleSearch->nb_points());
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, vertices.size()),
+            [&](const tbb::blocked_range<size_t>& range) {
+                std::vector<GEO::index_t> neighbors(neighborCount);
+                std::vector<double> squaredDistances(neighborCount);
+                for (size_t v = range.begin(); v != range.end(); ++v) {
+                    double point[3] = { vertices[v].x(), vertices[v].y(), vertices[v].z() };
+                    poleSearch->get_nearest_neighbors(neighborCount, point,
+                        neighbors.data(), squaredDistances.data());
+                    double innerDistance = 0.0;
+                    for (GEO::index_t k = 0; k < neighborCount; ++k) {
+                        const double* pole = polePoints + 3 * neighbors[k];
+                        Vector3 toPole(pole[0] - point[0], pole[1] - point[1], pole[2] - point[2]);
+                        double distance = toPole.length();
+                        if (distance <= 0)
+                            continue;
+                        // Inner poles lie against the normal; allow a bit of
+                        // tangency for curved sheets.
+                        if (Vector3::dotProduct(toPole, normals[v]) < 0.25 * distance) {
+                            innerDistance = distance;
+                            break;
+                        }
+                    }
+                    if (innerDistance <= 0)
+                        continue;
+                    double featureLimit = featureSizeFactor * innerDistance;
+                    if (localEdgeCounts[v] > 0) {
+                        double localEdgeLength = localEdgeLengthSums[v] / localEdgeCounts[v];
+                        if (featureLimit < localEdgeLength)
+                            featureLimit = localEdgeLength;
+                    }
+                    if (featureLimit < lowerBound)
+                        featureLimit = lowerBound;
+                    if (featureLimit < vertexTargetLengths[v])
+                        vertexTargetLengths[v] = featureLimit;
+                }
+            });
     }
 
 #if AUTO_REMESHER_DEBUG
@@ -424,7 +505,55 @@ bool AutoRemesher::remesh()
         double adaptivity;
         double sharpEdgeDegrees;
         double smoothNormalDegrees;
+        const GEO::NearestNeighborSearch* poleSearch;
+        const double* polePoints;
+        double featureSizeFactor;
     };
+
+    // Medial-axis poles of the whole mesh (Voronoi pole approximation).
+    // resample() clamps edge lengths by the distance to the nearest inner
+    // pole so thin features keep edges across their thickness.
+    // polePoints must outlive the isotropic phase: the search keeps a
+    // pointer to it.
+    std::vector<double> polePoints;
+    GEO::SmartPointer<GEO::NearestNeighborSearch> poleSearch;
+    if (m_featureSizeFactor > 0 && !m_vertices.empty()) {
+        setCurrentStatus("Analyzing feature sizes...");
+        // The Delaunay/NN backends read geogram command-line args
+        // (algo:*, sys:*), which must be declared once.
+        static std::once_flag argGroupsImported;
+        std::call_once(argGroupsImported, [] {
+            GEO::CmdLine::import_arg_group("standard");
+            GEO::CmdLine::import_arg_group("algo");
+        });
+        std::vector<double> packedVertices(m_vertices.size() * 3);
+        for (size_t i = 0; i < m_vertices.size(); ++i) {
+            packedVertices[i * 3] = m_vertices[i].x();
+            packedVertices[i * 3 + 1] = m_vertices[i].y();
+            packedVertices[i * 3 + 2] = m_vertices[i].z();
+        }
+        try {
+            GEO::LocalFeatureSize localFeatureSize(
+                (GEO::index_t)m_vertices.size(), packedVertices.data());
+            polePoints.assign(localFeatureSize.nb_poles() * 3, 0.0);
+            for (GEO::index_t i = 0; i < localFeatureSize.nb_poles(); ++i) {
+                const double* pole = localFeatureSize.pole(i);
+                polePoints[i * 3] = pole[0];
+                polePoints[i * 3 + 1] = pole[1];
+                polePoints[i * 3 + 2] = pole[2];
+            }
+            if (!polePoints.empty()) {
+                poleSearch = GEO::NearestNeighborSearch::create(3);
+                poleSearch->set_points(
+                    (GEO::index_t)(polePoints.size() / 3), polePoints.data());
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Feature size analysis failed (" << e.what()
+                      << "), continuing without" << std::endl;
+            poleSearch.reset();
+            polePoints.clear();
+        }
+    }
 
     std::vector<IslandContext> islandContexes;
     islandContexes.reserve(trianglesIslands.size());
@@ -452,21 +581,35 @@ bool AutoRemesher::remesh()
         context.adaptivity = m_adaptivity;
         context.sharpEdgeDegrees = m_sharpEdgeDegrees;
         context.smoothNormalDegrees = m_smoothNormalDegrees;
+        context.poleSearch = poleSearch.get();
+        context.polePoints = polePoints.empty() ? nullptr : polePoints.data();
+        context.featureSizeFactor = nullptr != context.poleSearch ? m_featureSizeFactor : 0.0;
 
-        // Detail floor: with one global edge length, islands smaller than a
-        // few edge lengths (teeth, spikes) collapse into blobs. Use a finer
-        // edge length on such islands so each keeps at least
-        // m_minIslandTriangleCount triangles — but never more triangles
-        // than it originally had, so micro-debris isn't up-resed.
-        if (m_minIslandTriangleCount > 0) {
-            size_t floorTriangles = std::min(context.triangles.size(), m_minIslandTriangleCount);
-            if (floorTriangles > 0) {
-                double islandArea = calculateMeshArea(context.vertices, context.triangles);
-                double islandVoxelSize = std::sqrt((islandArea / floorTriangles) / (0.86602540378 * 0.5));
-                if (islandVoxelSize > 0 && islandVoxelSize < context.voxelSize) {
-                    context.voxelSize = islandVoxelSize;
-                    ++raisedIslandCount;
+        // Island detail floor: with one global edge length, islands smaller
+        // than a few edge lengths (teeth, spikes) collapse into blobs.
+        // Guarantee each island at least m_islandDetailSpans edge lengths
+        // across its bounding diagonal — but never resample finer than the
+        // island's own original density, so micro-debris isn't up-resed.
+        if (m_islandDetailSpans > 0 && !context.vertices.empty()) {
+            Vector3 minPosition = context.vertices.front();
+            Vector3 maxPosition = context.vertices.front();
+            for (const auto& position : context.vertices) {
+                for (size_t i = 0; i < 3; ++i) {
+                    if (position[i] < minPosition[i])
+                        minPosition[i] = position[i];
+                    if (position[i] > maxPosition[i])
+                        maxPosition[i] = position[i];
                 }
+            }
+            double diagonal = (maxPosition - minPosition).length();
+            double spanVoxelSize = diagonal / m_islandDetailSpans;
+            double islandArea = calculateMeshArea(context.vertices, context.triangles);
+            double originalDensityVoxelSize = std::sqrt(
+                (islandArea / context.triangles.size()) / (0.86602540378 * 0.5));
+            double islandVoxelSize = std::max(spanVoxelSize, originalDensityVoxelSize);
+            if (islandVoxelSize > 0 && islandVoxelSize < context.voxelSize) {
+                context.voxelSize = islandVoxelSize;
+                ++raisedIslandCount;
             }
         }
 
@@ -509,7 +652,8 @@ bool AutoRemesher::remesh()
                     m_remesher->updateProgress(i, 0.0f);
 
                     auto t0 = std::chrono::high_resolution_clock::now();
-                    resample(ctx.vertices, ctx.triangles, ctx.voxelSize, ctx.adaptivity, ctx.sharpEdgeDegrees, ctx.smoothNormalDegrees, i);
+                    resample(ctx.vertices, ctx.triangles, ctx.voxelSize, ctx.adaptivity, ctx.sharpEdgeDegrees, ctx.smoothNormalDegrees, i,
+                        ctx.poleSearch, ctx.polePoints, ctx.featureSizeFactor);
                     auto t1 = std::chrono::high_resolution_clock::now();
                     *m_resampleTime += std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 

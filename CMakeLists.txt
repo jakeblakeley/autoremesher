@@ -179,8 +179,11 @@ target_include_directories(autoremesher_static PUBLIC
     ${GEOGRAM_DIR}/geogram/third_party/libMeshb/sources
     ${GEOGRAM_DIR}/geogram/NL
 )
+# GEOGRAM_WITH_PDEL enables the parallel Delaunay backend that
+# GEO::LocalFeatureSize needs (parallel_delaunay_3d.cpp is otherwise an
+# empty translation unit).
 target_compile_definitions(autoremesher_static PUBLIC
-    _USE_MATH_DEFINES NOMINMAX EIGEN_MPL2_ONLY)
+    _USE_MATH_DEFINES NOMINMAX EIGEN_MPL2_ONLY GEOGRAM_WITH_PDEL)
 target_link_libraries(autoremesher_static PUBLIC TBB::tbb)
 set_target_properties(autoremesher_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

@@ -27,6 +27,10 @@
 #include <mutex>
 #include <vector>
 
+namespace GEO {
+class NearestNeighborSearch;
+}
+
 namespace AutoRemesher {
 
 class IsotropicRemesher;
@@ -52,9 +56,20 @@ public:
         m_targetTriangleCount = targetTriangleCount;
     }
 
-    void setMinIslandTriangleCount(size_t minIslandTriangleCount)
+    // Minimum number of edge lengths across each island's bounding
+    // diagonal, so small disconnected parts keep their shape at coarse
+    // global densities. 0 disables.
+    void setIslandDetailSpans(size_t islandDetailSpans)
     {
-        m_minIslandTriangleCount = minIslandTriangleCount;
+        m_islandDetailSpans = islandDetailSpans;
+    }
+
+    // Clamp resampling edge length to factor * local-feature-size (distance
+    // to the medial axis), so thin features (claws, horns) keep enough
+    // edges across their thickness. 0 disables.
+    void setFeatureSizeFactor(double featureSizeFactor)
+    {
+        m_featureSizeFactor = featureSizeFactor;
     }
 
     void setScaling(double scaling)
@@ -128,7 +143,8 @@ private:
     std::vector<float> m_threadProgressWeights;
     double m_scaling = 0.0;
     size_t m_targetTriangleCount = 0;
-    size_t m_minIslandTriangleCount = 64;
+    size_t m_islandDetailSpans = 10;
+    double m_featureSizeFactor = 1.0;
     double m_voxelSize = 0.0;
     double m_adaptivity = 1.0;
     double m_sharpEdgeDegrees = m_defaultSharpEdgeDegrees;
@@ -148,7 +164,10 @@ private:
         double adaptivity,
         double sharpEdgeDegrees,
         double smoothNormalDegrees,
-        size_t islandIndex);
+        size_t islandIndex,
+        const GEO::NearestNeighborSearch* poleSearch,
+        const double* polePoints,
+        double featureSizeFactor);
     static double calculateMeshArea(const std::vector<Vector3>& vertices,
         const std::vector<std::vector<size_t>>& triangles);
 };
