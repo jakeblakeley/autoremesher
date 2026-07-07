@@ -45,9 +45,10 @@ high-polygon meshes into clean quad-based topology. It is built on top of
 
 Requires **Blender 5.1+** (or Blender 4.2 LTS–5.0 with the `-blender42-` zips).
 
-1. Download the extension zip for your platform (`autoremesher-<version>-<platform>.zip`)
-   from the [blender-extension workflow artifacts](../../actions/workflows/blender-extension.yml)
-   (or build it locally, see below).
+1. Download the extension zip for your platform (`autoremesher-<version>-<platform>.zip`,
+   e.g. `autoremesher-1.0.0-macos_arm64.zip`) from the
+   [releases page](../../releases) — use the `-blender42-` variant for
+   Blender 4.2 LTS–5.0 — or build it locally (see below).
 2. In Blender: `Edit → Preferences → Get Extensions → ▾ (top-right menu) → Install from Disk…`
    and pick the zip.
 3. In the 3D Viewport, press `N` and open the **AutoRemesher** tab. Select a mesh object and
