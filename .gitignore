@@ -42,4 +42,5 @@ qrc_*.cpp
 
 .DS_Store
 
-moc/
+moc/build/
+dist/

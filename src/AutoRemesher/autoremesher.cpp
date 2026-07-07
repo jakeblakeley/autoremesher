@@ -24,12 +24,13 @@
 #include <AutoRemesher/MeshSeparator>
 #include <AutoRemesher/Parameterizer>
 #include <AutoRemesher/QuadExtractor>
-#include <QDebug>
 #include <atomic>
 #include <chrono>
 #include <geogram_report_progress.h>
+#include <iostream>
 #include <limits>
 #include <queue>
+#include <thread>
 // Qt defines `emit` as a macro, which collides with TBB profiling.h's `void emit()`.
 // macOS `<mach/mach.h>` also defines `emit`. Undefine before including TBB headers.
 #if defined(__APPLE__) || defined(emit)
@@ -121,7 +122,7 @@ void AutoRemesher::initializeVoxelSize()
     double triangleArea = area / m_targetTriangleCount;
     m_voxelSize = std::sqrt(triangleArea / (0.86602540378 * 0.5));
 #if AUTO_REMESHER_DEBUG
-    qDebug() << "Area:" << area << " voxelSize:" << m_voxelSize;
+    std::cerr << "Area: " << area << " voxelSize: " << m_voxelSize << std::endl;
 #endif
 }
 
@@ -144,7 +145,7 @@ static void ReportProgress(void* tag, float progress)
 {
     ReportProgressContext* context = (ReportProgressContext*)tag;
 #if AUTO_REMESHER_DEBUG
-    //qDebug() << "Island[" << context->islandIndex << "]: round(" << geogram_report_progress_round << ") progress(" << (100 * progress) << "%)";
+    //std::cerr << "Island[" << context->islandIndex << "]: round(" << geogram_report_progress_round << ") progress(" << (100 * progress) << "%)" << std::endl;
 #endif
     static const char* qc_stages[] = {
         "brush + cross-field alignment",
@@ -282,7 +283,7 @@ void AutoRemesher::resample(std::vector<Vector3>& vertices,
     }
 
 #if AUTO_REMESHER_DEBUG
-    qDebug() << "Island[" << islandIndex << "]: Uniformly remeshing on target edge length:" << voxelSize;
+    std::cerr << "Island[" << islandIndex << "]: Uniformly remeshing on target edge length: " << voxelSize << std::endl;
 #endif
     IsotropicRemesher isotropicRemesher(vertices, triangles);
     isotropicRemesher.setTargetEdgeLength(voxelSize);
@@ -294,7 +295,7 @@ void AutoRemesher::resample(std::vector<Vector3>& vertices,
     vertices = isotropicRemesher.remeshedVertices();
     triangles = isotropicRemesher.remeshedTriangles();
 #if AUTO_REMESHER_DEBUG
-    qDebug() << "Island[" << islandIndex << "]: Uniformly remesh done, vertex count:" << vertices.size() << " triangle count:" << triangles.size();
+    std::cerr << "Island[" << islandIndex << "]: Uniformly remesh done, vertex count: " << vertices.size() << " triangle count: " << triangles.size() << std::endl;
 #endif
 }
 
@@ -350,7 +351,7 @@ bool AutoRemesher::remesh()
     }
 
 #if AUTO_REMESHER_DEBUG
-    qDebug() << "Split to islands:" << trianglesIslands.size();
+    std::cerr << "Split to islands: " << trianglesIslands.size() << std::endl;
 #endif
 
     struct IslandContext {
@@ -585,17 +586,17 @@ bool AutoRemesher::remesh()
     auto t_mergeMs = std::chrono::duration_cast<std::chrono::milliseconds>(t_mergeEnd - t_parallelEnd).count();
     auto t_totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t_mergeEnd - t_start).count();
 
-    qDebug() << "Quad mesh breakdown: total" << t_totalMs << "ms"
-             << "| voxel" << t_voxelMs << "ms"
-             << "| split" << t_splitMs << "ms"
-             << "| build" << t_buildMs << "ms"
-             << "| parallel" << t_parallelWallMs << "ms"
-             << "  (param" << parameterizeTimeAccumulated.load() << "ms"
-             << "| extract" << extractTimeAccumulated.load() << "ms)"
-             << "| merge" << t_mergeMs << "ms";
+    std::cerr << "Quad mesh breakdown: total " << t_totalMs << " ms"
+              << " | voxel " << t_voxelMs << " ms"
+              << " | split " << t_splitMs << " ms"
+              << " | build " << t_buildMs << " ms"
+              << " | parallel " << t_parallelWallMs << " ms"
+              << " (param " << parameterizeTimeAccumulated.load() << " ms"
+              << " | extract " << extractTimeAccumulated.load() << " ms)"
+              << " | merge " << t_mergeMs << " ms" << std::endl;
 
 #if AUTO_REMESHER_DEBUG
-    qDebug() << "Remesh done";
+    std::cerr << "Remesh done" << std::endl;
 #endif
 
     if (nullptr != m_progressHandler)
