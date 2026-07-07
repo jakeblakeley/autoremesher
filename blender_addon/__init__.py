@@ -55,6 +55,14 @@ class AutoRemesherSettings(bpy.types.PropertyGroup):
         subtype='FACTOR',
         default=1.0, min=0.0, max=1.0,
     )
+    min_island_quads: bpy.props.IntProperty(
+        name="Island Detail Floor",
+        description="Minimum quads for each small disconnected part (teeth, "
+        "spikes). Small islands are remeshed at higher density so they keep "
+        "their shape instead of collapsing into blobs; never adds more detail "
+        "than the original part had. 0 disables",
+        default=32, min=0, max=2000,
+    )
 
 
 class _Job:
@@ -158,6 +166,7 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
 
         params = {
             "target_quad_count": settings.target_quad_count,
+            "min_island_quad_count": settings.min_island_quads,
             "scaling": settings.edge_scaling,
             "adaptivity": settings.adaptivity,
             "sharp_edge_degrees": math.degrees(settings.sharp_edge),
@@ -306,6 +315,7 @@ class VIEW3D_PT_autoremesher(bpy.types.Panel):
         column.prop(settings, "sharp_edge")
         column.prop(settings, "smooth_normal")
         column.prop(settings, "adaptivity")
+        column.prop(settings, "min_island_quads")
 
         if _active_job is not None:
             box = layout.box()

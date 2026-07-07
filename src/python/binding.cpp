@@ -72,6 +72,7 @@ public:
     }
 
     size_t targetQuadCount = 50000;
+    size_t minIslandQuadCount = 32;
     double scaling = 1.0;
     double adaptivity = 1.0;
     double sharpEdgeDegrees = 90.0;
@@ -88,6 +89,7 @@ public:
         AutoRemesher::AutoRemesher remesher(m_vertices, m_triangles);
         // The desktop UI counts quads; the core counts triangles (2 per quad).
         remesher.setTargetTriangleCount(targetQuadCount * 2);
+        remesher.setMinIslandTriangleCount(minIslandQuadCount * 2);
         remesher.setScaling(scaling);
         remesher.setGradientAdaptivity(adaptivity);
         remesher.setSharpEdgeDegrees(sharpEdgeDegrees);
@@ -197,6 +199,10 @@ NB_MODULE(autoremesher_core, m)
             nb::arg("vertices"), nb::arg("triangles"),
             "vertices: float64 array of shape (n, 3); triangles: uint32 array of shape (m, 3)")
         .def_rw("target_quad_count", &Remesher::targetQuadCount)
+        .def_rw("min_island_quad_count", &Remesher::minIslandQuadCount,
+            "Small disconnected islands are remeshed at higher density so each "
+            "keeps at least this many quads (capped by its original triangle "
+            "count). 0 disables the detail floor.")
         .def_rw("scaling", &Remesher::scaling)
         .def_rw("adaptivity", &Remesher::adaptivity)
         .def_rw("sharp_edge_degrees", &Remesher::sharpEdgeDegrees)

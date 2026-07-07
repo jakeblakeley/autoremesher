@@ -52,6 +52,11 @@ public:
         m_targetTriangleCount = targetTriangleCount;
     }
 
+    void setMinIslandTriangleCount(size_t minIslandTriangleCount)
+    {
+        m_minIslandTriangleCount = minIslandTriangleCount;
+    }
+
     void setScaling(double scaling)
     {
         m_scaling = scaling;
@@ -123,6 +128,7 @@ private:
     std::vector<float> m_threadProgressWeights;
     double m_scaling = 0.0;
     size_t m_targetTriangleCount = 0;
+    size_t m_minIslandTriangleCount = 64;
     double m_voxelSize = 0.0;
     double m_adaptivity = 1.0;
     double m_sharpEdgeDegrees = m_defaultSharpEdgeDegrees;

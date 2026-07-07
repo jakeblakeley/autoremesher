@@ -428,6 +428,7 @@ bool AutoRemesher::remesh()
 
     std::vector<IslandContext> islandContexes;
     islandContexes.reserve(trianglesIslands.size());
+    size_t raisedIslandCount = 0;
     for (size_t islandIndex = 0; islandIndex < trianglesIslands.size(); ++islandIndex) {
         const auto& island = trianglesIslands[islandIndex];
         IslandContext context;
@@ -452,7 +453,28 @@ bool AutoRemesher::remesh()
         context.sharpEdgeDegrees = m_sharpEdgeDegrees;
         context.smoothNormalDegrees = m_smoothNormalDegrees;
 
+        // Detail floor: with one global edge length, islands smaller than a
+        // few edge lengths (teeth, spikes) collapse into blobs. Use a finer
+        // edge length on such islands so each keeps at least
+        // m_minIslandTriangleCount triangles — but never more triangles
+        // than it originally had, so micro-debris isn't up-resed.
+        if (m_minIslandTriangleCount > 0) {
+            size_t floorTriangles = std::min(context.triangles.size(), m_minIslandTriangleCount);
+            if (floorTriangles > 0) {
+                double islandArea = calculateMeshArea(context.vertices, context.triangles);
+                double islandVoxelSize = std::sqrt((islandArea / floorTriangles) / (0.86602540378 * 0.5));
+                if (islandVoxelSize > 0 && islandVoxelSize < context.voxelSize) {
+                    context.voxelSize = islandVoxelSize;
+                    ++raisedIslandCount;
+                }
+            }
+        }
+
         islandContexes.push_back(context);
+    }
+    if (raisedIslandCount > 0) {
+        std::cerr << "Raised resolution of " << raisedIslandCount
+                  << " small island(s) to preserve detail" << std::endl;
     }
     setCurrentStatus("Building island contexts...");
     if (nullptr != m_progressHandler)

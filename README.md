@@ -1,81 +1,69 @@
-# AutoRemesher
+# AutoRemesher for Blender
 
-AutoRemesher is a cross-platform automatic quad remeshing tool that converts high-polygon meshes into clean quad-based topology. It is built on top of libraries: [Geogram](https://github.com/BrunoLevy/geogram), [libigl](https://github.com/libigl), [isotropicremesher](https://github.com/huxingyi/isotropicremesher) and [others](https://github.com/huxingyi/autoremesher/blob/master/ACKNOWLEDGEMENTS.html).
+> **This is a fork** of [huxingyi/autoremesher](https://github.com/huxingyi/autoremesher) by
+> [Jeremy Hu](https://github.com/huxingyi) (the author of [Dust3D](https://dust3d.org/)) that
+> ports the remeshing engine into a **Blender extension**. All credit for the remeshing
+> algorithm and the original desktop application goes to the original author — if this tool
+> is useful to you, please consider supporting him:
+>
+> Buy Jeremy a coffee for staying up late coding :-) [![](https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=GHALWLWXYGCU6&item_name=Support+me+coding+in+my+spare+time&currency_code=AUD&source=url)
 
-Buy me a coffee for staying up late coding :-) [![](https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=GHALWLWXYGCU6&item_name=Support+me+coding+in+my+spare+time&currency_code=AUD&source=url)
+AutoRemesher is an automatic quad remeshing (auto-retopology) tool that converts
+high-polygon meshes into clean quad-based topology. It is built on top of
+[Geogram](https://github.com/BrunoLevy/geogram),
+[isotropicremesher](https://github.com/huxingyi/isotropicremesher),
+[Eigen](https://eigen.tuxfamily.org/), [oneTBB](https://github.com/uxlfoundation/oneTBB) and
+[others](ACKNOWLEDGEMENTS.html).
 
 <img width="3644" height="2202" alt="autoremesher-1 0-screenshot" src="https://github.com/user-attachments/assets/47851f1e-127c-49af-81b7-0c8ac06fb3ad" />
 
-## Blender Add-on
+## Installing the Blender extension
 
-The remeshing core is also available as a Blender extension — see
-[blender_addon/README.md](blender_addon/README.md).
+Requires **Blender 5.1+** (or Blender 4.2 LTS–5.0 with the `-blender42-` zips).
 
-## Getting Started
+1. Download the extension zip for your platform (`autoremesher-<version>-<platform>.zip`)
+   from the [blender-extension workflow artifacts](../../actions/workflows/blender-extension.yml)
+   (or build it locally, see below).
+2. In Blender: `Edit → Preferences → Get Extensions → ▾ (top-right menu) → Install from Disk…`
+   and pick the zip.
+3. In the 3D Viewport, press `N` and open the **AutoRemesher** tab. Select a mesh object and
+   press **Remesh** — the result is added as a new object, progress shows in the status bar,
+   and `Esc` cancels.
 
-These instructions will get you a copy of AutoRemesher up and running on your local machine for development and testing purposes.
+Parameters mirror the desktop app: **Target Quads**, **Edge Scaling**, **Sharp Edge**,
+**Smooth Normal**, **Adaptivity**, plus a Blender-only **Island Detail Floor** that keeps
+small disconnected parts (teeth, spikes) from collapsing into blobs.
 
-### Prerequisites
+The remeshing runs in a separate process of Blender's own Python, so a crash in the native
+core can never take Blender down.
 
-- C++ compiler with C++14 support
-- CMake 3.12 or later
-- TBB (Intel Threading Building Blocks)
+### Update notes
 
-### Building
+- **This fork has only been tested on macOS (Apple Silicon) so far.** CI builds
+  wheels and extension zips for Windows x64, Linux x64 and macOS x64 as well — they are
+  untested, vibe-coded installs; if you try one, reports (and PRs) are very welcome.
+- Fork changes over upstream 1.0.0: Python bindings for the core (nanobind, stable ABI),
+  the Blender extension, per-island failure recovery (retry + keep-triangles fallback
+  instead of holes), input scale normalization, several crash/use-after-free fixes, and
+  n-gon-aware output. See the commit history on the `blender-addon` branch for details.
 
-1. Clone the repository
-```
-git clone https://github.com/huxingyi/autoremesher.git
-```
+### Building the extension locally
 
-2. Build using CMake
-```
-cd autoremesher
-mkdir build && cd build
-cmake ..
-cmake --build .
-```
-
-#### Windows
-
-1. Install Visual Studio 2022 with C++ development tools
-2. Install CMake from [cmake.org](https://cmake.org/)
-3. Open a command prompt and follow the build steps above, or open the project folder in Visual Studio and let it handle CMake configuration
-
-#### macOS
-
-1. Install Xcode Command Line Tools: `xcode-select --install`
-2. Install CMake via Homebrew: `brew install cmake`
-3. Follow the build steps above
-
-#### Linux
-
-1. Install build dependencies using your distribution's package manager:
-   - Ubuntu/Debian: `sudo apt install build-essential cmake libtbb-dev`
-   - Fedora: `sudo dnf install gcc-c++ cmake tbb-devel`
-
-### Quick Start
-
-#### Windows
-
-Download `autoremesher-<version>-win32-x86_64.zip` from [releases](https://github.com/huxingyi/autoremesher/releases), extract it and run `autoremesher.exe`.
-
-#### macOS
-
-Download `autoremesher-<version>.dmg` from [releases](https://github.com/huxingyi/autoremesher/releases).
-
-*For the first time, Apple will reject to run and popup something like "can't be opened because its integrity cannot be verified". Go to System Preferences > Security & Privacy > General and under "Allow apps downloaded from" click the button to allow it.*
-
-#### Linux
-
-Download `autoremesher-<version>.AppImage` from [releases](https://github.com/huxingyi/autoremesher/releases).
-
-```
-$ chmod a+x ./autoremesher-<version>.AppImage
-$ ./autoremesher-<version>.AppImage
+```sh
+uv build --wheel --python 3.13        # or: pip wheel . (needs CMake + a C++17 toolchain)
+python3 scripts/package_extension.py  # writes per-platform zips to dist/
 ```
 
-### Links
+See [blender_addon/README.md](blender_addon/README.md) for details, including the
+headless end-to-end test.
+
+## The original desktop application
+
+The Qt desktop app still builds with qmake (`autoremesher.pro`) — see the
+[upstream repository](https://github.com/huxingyi/autoremesher) for desktop releases and
+build instructions.
+
+### Links about the original AutoRemesher
 
 - [Check out open-source auto-retopology tool AutoRemesher](http://www.cgchannel.com/2020/08/check-out-open-source-auto-retopology-tool-autoremesher/) **cgchannel.com**
 - [A New Open-Source Auto-Retopology Tool](https://80.lv/articles/a-new-open-source-auto-retopology-tool/) **80.lv**
@@ -90,10 +78,21 @@ $ ./autoremesher-<version>.AppImage
 
 ## License
 
-AutoRemesher is licensed under the MIT License - see the [LICENSE](https://github.com/huxingyi/autoremesher/blob/master/LICENSE) file for details.
+The remeshing core (this repository's original code) is licensed under the **MIT License**
+by the original author — see [LICENSE](LICENSE). The Blender extension
+(`blender_addon/`) is **GPL-3.0-or-later**, as required for add-ons on
+[extensions.blender.org](https://extensions.blender.org/).
+
+Bundled third-party libraries keep their own licenses, all GPL-compatible:
+[Geogram](https://github.com/BrunoLevy/geogram) (BSD-3-Clause, Inria),
+[Eigen](https://eigen.tuxfamily.org/) (MPL-2.0, built with `EIGEN_MPL2_ONLY`),
+[oneTBB](https://github.com/uxlfoundation/oneTBB) (Apache-2.0),
+[isotropicremesher](https://github.com/huxingyi/isotropicremesher) (MIT) and
+[tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) (MIT).
 
 ## Acknowledgements
 
-See the full [ACKNOWLEDGEMENTS](https://github.com/huxingyi/autoremesher/blob/master/ACKNOWLEDGEMENTS.html) for a list of libraries and resources used in this project.
+See the full [ACKNOWLEDGEMENTS](ACKNOWLEDGEMENTS.html) for the list of libraries and
+resources used in this project.
 
 <!-- Sponsors begin --><!-- Sponsors end -->
