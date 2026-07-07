@@ -3,16 +3,22 @@
 # AutoRemesher for Blender — automatic quad remeshing.
 # UI and parameters mirror the AutoRemesher desktop app
 # (https://github.com/huxingyi/autoremesher); the remeshing itself runs in
-# the bundled autoremesher_core native module.
+# the bundled autoremesher_core native module, executed in a subprocess of
+# Blender's own Python so a crash in the native core can never take down
+# Blender (and Esc genuinely cancels by terminating the process).
 
+import json
 import math
+import os
+import subprocess
+import sys
+import tempfile
 import threading
 
 import bpy
 import numpy as np
 
-# The current background job, if any. Only one remesh may run at a time:
-# the core routes geogram progress reporting through shared state.
+# State of the current background job, if any. Only one remesh runs at a time.
 _active_job = None
 
 
@@ -51,6 +57,61 @@ class AutoRemesherSettings(bpy.types.PropertyGroup):
     )
 
 
+class _Job:
+    """A remesh subprocess plus a reader thread collecting its progress."""
+
+    def __init__(self, command, env):
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NO_WINDOW
+        self.process = subprocess.Popen(
+            command, env=env, text=True, creationflags=creationflags,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.progress = 0.0
+        self.status = "Starting…"
+        self.tail = []  # last output lines, for error reporting
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+
+    def _read(self):
+        for line in self.process.stdout:
+            parts = line.rstrip().split(" ", 2)
+            if parts[0] == "PROGRESS" and len(parts) >= 2:
+                try:
+                    self.progress = float(parts[1])
+                except ValueError:
+                    continue
+                if len(parts) > 2 and parts[2]:
+                    self.status = parts[2]
+            else:
+                self.tail = (self.tail + [line.rstrip()])[-15:]
+
+    def finished(self):
+        return self.process.poll() is not None
+
+    def cancel(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+
+
+def _worker_command(vertices, triangles, params):
+    """Write the job input and return (command, env, output_path)."""
+    import autoremesher_core
+
+    fd, in_path = tempfile.mkstemp(suffix=".npz", prefix="autoremesher_in_")
+    os.close(fd)
+    out_path = in_path.replace("_in_", "_out_")
+    np.savez(in_path, vertices=vertices, triangles=triangles,
+             params_json=json.dumps(params))
+
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "remesh_worker.py")
+    env = os.environ.copy()
+    core_dir = os.path.dirname(os.path.abspath(autoremesher_core.__file__))
+    env["PYTHONPATH"] = core_dir + os.pathsep + env.get("PYTHONPATH", "")
+    return [sys.executable, worker, in_path, out_path], env, in_path, out_path
+
+
 class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
     bl_idname = "object.autoremesher_remesh"
     bl_label = "Remesh"
@@ -58,9 +119,9 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     _timer = None
-    _thread = None
-    _remesher = None
-    _result = None
+    _job = None
+    _in_path = None
+    _out_path = None
     _source_name = None
 
     @classmethod
@@ -75,7 +136,6 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
 
     def execute(self, context):
         global _active_job
-        import autoremesher_core
 
         settings = context.scene.autoremesher
         obj = context.active_object
@@ -96,34 +156,33 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
         mesh.loop_triangles.foreach_get("vertices", triangles)
         eval_obj.to_mesh_clear()
 
-        remesher = autoremesher_core.Remesher(
+        params = {
+            "target_quad_count": settings.target_quad_count,
+            "scaling": settings.edge_scaling,
+            "adaptivity": settings.adaptivity,
+            "sharp_edge_degrees": math.degrees(settings.sharp_edge),
+            "smooth_normal_degrees": math.degrees(settings.smooth_normal),
+        }
+        command, env, self._in_path, self._out_path = _worker_command(
             vertices.reshape(-1, 3).astype(np.float64),
-            triangles.reshape(-1, 3).astype(np.uint32),
-        )
-        remesher.target_quad_count = settings.target_quad_count
-        remesher.scaling = settings.edge_scaling
-        remesher.sharp_edge_degrees = math.degrees(settings.sharp_edge)
-        remesher.smooth_normal_degrees = math.degrees(settings.smooth_normal)
-        remesher.adaptivity = settings.adaptivity
-
-        self._remesher = remesher
-        self._result = {}
+            triangles.reshape(-1, 3).astype(np.uint32), params)
         self._source_name = obj.name
 
         if bpy.app.background:
             # No modal timers in background mode; run synchronously.
-            if not remesher.run():
+            completed = subprocess.run(command, env=env, text=True,
+                                       stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT)
+            ok = completed.returncode == 0 and self._link_result(context)
+            self._remove_temp_files()
+            if not ok:
+                print(completed.stdout[-2000:])
                 self.report({'ERROR'}, "Remesh failed")
                 return {'CANCELLED'}
-            self._link_result(context)
             return {'FINISHED'}
 
-        # Daemon: the core has no cancellation hook, so an abandoned job is
-        # left to finish (or die with Blender) in the background.
-        self._thread = threading.Thread(
-            target=lambda: self._result.update(ok=remesher.run()), daemon=True)
-        self._thread.start()
-        _active_job = remesher
+        self._job = _Job(command, env)
+        _active_job = self._job
 
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.25, window=context.window)
@@ -132,40 +191,50 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
 
     def modal(self, context, event):
         if event.type == 'ESC':
+            self._job.cancel()
             self._cleanup(context)
-            self.report({'WARNING'}, "Remesh abandoned (finishing in background)")
+            self.report({'WARNING'}, "Remesh cancelled")
             return {'CANCELLED'}
 
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
 
-        if self._thread.is_alive():
-            status = self._remesher.status or "Remeshing"
+        if not self._job.finished():
             context.workspace.status_text_set(
-                f"AutoRemesher: {status} — {self._remesher.progress * 100.0:.0f}%"
-                "  (Esc to abandon)")
+                f"AutoRemesher: {self._job.status} — "
+                f"{self._job.progress * 100.0:.0f}%  (Esc to cancel)")
             for area in context.screen.areas:
                 if area.type == 'VIEW_3D':
                     area.tag_redraw()
             return {'RUNNING_MODAL'}
 
-        self._thread.join()
-        succeeded = self._result.get("ok", False)
+        exit_code = self._job.process.returncode
+        succeeded = exit_code == 0
+        detail = " | ".join(self._job.tail[-3:])
         try:
             if succeeded:
-                self._link_result(context)
+                succeeded = self._link_result(context)
         finally:
             self._cleanup(context)
         if not succeeded:
-            self.report({'ERROR'}, "Remesh failed — see the system console for details")
+            if exit_code not in (0, 2):
+                self.report({'ERROR'},
+                            f"Remeshing process crashed (exit {exit_code}). "
+                            "Blender is unaffected. " + detail)
+            else:
+                self.report({'ERROR'}, "Remesh failed. " + detail)
             return {'CANCELLED'}
         return {'FINISHED'}
 
     def _link_result(self, context):
-        remesher = self._remesher
-        remeshed_vertices = remesher.vertices()
-        remeshed_quads = remesher.quads()
+        if not os.path.exists(self._out_path):
+            return False
+        data = np.load(self._out_path, allow_pickle=False)
+        remeshed_vertices = data["vertices"]
+        remeshed_quads = data["quads"]
         quad_count = remeshed_quads.shape[0]
+        if quad_count == 0:
+            return False
 
         mesh = bpy.data.meshes.new(f"{self._source_name} Remesh")
         mesh.vertices.add(remeshed_vertices.shape[0])
@@ -195,10 +264,20 @@ class OBJECT_OT_autoremesher_remesh(bpy.types.Operator):
         result.select_set(True)
         context.view_layer.objects.active = result
         self.report({'INFO'}, f"Remeshed to {quad_count} quads")
+        return True
+
+    def _remove_temp_files(self):
+        for path in (self._in_path, self._out_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     def _cleanup(self, context):
         global _active_job
         _active_job = None
+        self._remove_temp_files()
         context.workspace.status_text_set(None)
         if self._timer is not None:
             context.window_manager.event_timer_remove(self._timer)

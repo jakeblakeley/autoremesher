@@ -144,6 +144,8 @@ struct ReportProgressContext {
 static void ReportProgress(void* tag, float progress)
 {
     ReportProgressContext* context = (ReportProgressContext*)tag;
+    if (nullptr == context)
+        return;
 #if AUTO_REMESHER_DEBUG
     //std::cerr << "Island[" << context->islandIndex << "]: round(" << geogram_report_progress_round << ") progress(" << (100 * progress) << "%)" << std::endl;
 #endif
@@ -327,6 +329,34 @@ bool AutoRemesher::remesh()
         m_progressHandler(m_tag, 0.0, "Initializing...");
 
     auto t_start = std::chrono::high_resolution_clock::now();
+
+    // Normalize the input into a canonical ~2-unit box centered at the
+    // origin. Parts of the pipeline are not scale-invariant (PositionKey
+    // welds by fixed 1e-5 quantization, and the solvers degrade on very
+    // small or very large coordinates), so remesh in canonical space and
+    // map the result back afterwards.
+    Vector3 normalizeOrigin;
+    double normalizeFactor = 1.0;
+    if (!m_vertices.empty()) {
+        Vector3 minPosition = m_vertices.front();
+        Vector3 maxPosition = m_vertices.front();
+        for (const auto& position : m_vertices) {
+            for (size_t i = 0; i < 3; ++i) {
+                if (position[i] < minPosition[i])
+                    minPosition[i] = position[i];
+                if (position[i] > maxPosition[i])
+                    maxPosition[i] = position[i];
+            }
+        }
+        normalizeOrigin = (minPosition + maxPosition) * 0.5;
+        double maxExtent = std::max(std::max(maxPosition[0] - minPosition[0],
+                                        maxPosition[1] - minPosition[1]),
+            maxPosition[2] - minPosition[2]);
+        if (maxExtent > 0)
+            normalizeFactor = 2.0 / maxExtent;
+        for (auto& position : m_vertices)
+            position = (position - normalizeOrigin) * normalizeFactor;
+    }
 
     auto t_voxelStart = std::chrono::high_resolution_clock::now();
     setCurrentStatus("Computing voxel size...");
@@ -535,6 +565,14 @@ bool AutoRemesher::remesh()
                 *m_extractTime += std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
 
                 delete uvs;
+
+                // reportProgressContext dies with this iteration, but this
+                // worker thread can later steal quad_cover's inner TBB tasks
+                // from another island and fire the progress callback through
+                // these thread_locals — clear them so a stale (dangling) tag
+                // is never dereferenced.
+                geogram_report_progress_tag = nullptr;
+                geogram_report_progress_callback = nullptr;
             }
         }
 
@@ -575,6 +613,14 @@ bool AutoRemesher::remesh()
                 quad.push_back(vertexStartIndex + v);
             m_remeshedQuads.push_back(quad);
         }
+    }
+
+    // Map the result back from canonical space to the input's original
+    // position and scale.
+    if (normalizeFactor != 0) {
+        double invFactor = 1.0 / normalizeFactor;
+        for (auto& position : m_remeshedVertices)
+            position = position * invFactor + normalizeOrigin;
     }
 
     auto t_mergeEnd = std::chrono::high_resolution_clock::now();

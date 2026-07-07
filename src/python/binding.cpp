@@ -42,7 +42,9 @@ namespace {
 void ensureGeogramInitialized()
 {
     static std::once_flag flag;
-    std::call_once(flag, [] { GEO::initialize(); });
+    // 0 (not GEOGRAM_INSTALL_HANDLERS): geogram must not install
+    // process-wide signal/error handlers inside the host application.
+    std::call_once(flag, [] { GEO::initialize(0); });
 }
 
 using VertexArray = nb::ndarray<nb::numpy, double, nb::shape<-1, 3>, nb::c_contig, nb::device::cpu>;
