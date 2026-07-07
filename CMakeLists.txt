@@ -9,7 +9,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(Python 3.11 COMPONENTS Interpreter Development.Module REQUIRED)
+# Development.SABIModule is required for nanobind's STABLE_ABI to take
+# effect (otherwise it silently builds a version-specific module).
+find_package(Python 3.11 COMPONENTS Interpreter Development.Module
+    Development.SABIModule REQUIRED)
 
 # --- nanobind (fetched by pip as a build requirement; located via its CMake config)
 execute_process(
@@ -21,6 +24,7 @@ find_package(nanobind CONFIG REQUIRED)
 include(FetchContent)
 set(TBB_TEST OFF CACHE BOOL "" FORCE)
 set(TBB_STRICT OFF CACHE BOOL "" FORCE)
+set(TBB_INSTALL OFF CACHE BOOL "" FORCE)
 set(TBB_ENABLE_IPO OFF CACHE BOOL "" FORCE)
 set(TBBMALLOC_BUILD OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF)

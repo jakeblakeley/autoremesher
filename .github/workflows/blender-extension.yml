@@ -39,7 +39,9 @@ jobs:
           merge-multiple: true
 
       - name: Package per-platform extension zips
-        run: python3 scripts/package_extension.py
+        run: |
+          python3 scripts/package_extension.py                     # Blender 5.1+
+          python3 scripts/package_extension.py --python-tag cp311  # Blender 4.2-5.0
 
       - uses: actions/upload-artifact@v4
         with:

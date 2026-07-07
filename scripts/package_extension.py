@@ -33,11 +33,27 @@ def blender_platform(wheel_name: str) -> str:
     raise SystemExit(f"Unrecognized wheel platform tag: {wheel_name}")
 
 
-def patch_manifest(manifest: str, platform: str, wheel_names: list[str]) -> str:
+# Blender rejects extensions containing any wheel its Python can't load, so
+# each zip carries exactly one Python generation, scoped to the Blender
+# releases shipping that Python (3.11 up to Blender 5.0; 3.13 from 5.1).
+PYTHON_TAG_BLENDER_RANGE = {
+    "cp312": ("5.1.0", None),     # stable-ABI wheel, Python 3.12+
+    "cp311": ("4.2.0", "5.1.0"),  # Python 3.11; version_max is exclusive
+}
+
+
+def patch_manifest(manifest: str, platform: str, wheel_names: list[str],
+                   python_tag: str) -> str:
     wheels = ", ".join(f'"./wheels/{name}"' for name in sorted(wheel_names))
     manifest = re.sub(r"^platforms = .*$", f'platforms = ["{platform}"]',
                       manifest, count=1, flags=re.M)
     manifest = re.sub(r"^wheels = .*$", f"wheels = [{wheels}]",
+                      manifest, count=1, flags=re.M)
+    version_min, version_max = PYTHON_TAG_BLENDER_RANGE[python_tag]
+    replacement = f'blender_version_min = "{version_min}"'
+    if version_max is not None:
+        replacement += f'\nblender_version_max = "{version_max}"'
+    manifest = re.sub(r"^blender_version_min = .*$", replacement,
                       manifest, count=1, flags=re.M)
     return manifest
 
@@ -45,11 +61,15 @@ def patch_manifest(manifest: str, platform: str, wheel_names: list[str]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--wheel-dir", default=ROOT / "dist", type=Path)
+    parser.add_argument("--python-tag", choices=sorted(PYTHON_TAG_BLENDER_RANGE),
+                        default="cp312",
+                        help="which wheel generation to package (default: cp312)")
     args = parser.parse_args()
 
-    wheels = sorted(args.wheel_dir.glob("autoremesher_core-*.whl"))
+    wheels = sorted(args.wheel_dir.glob(f"autoremesher_core-*-{args.python_tag}-*.whl"))
     if not wheels:
-        raise SystemExit(f"No autoremesher_core wheels in {args.wheel_dir}")
+        raise SystemExit(
+            f"No {args.python_tag} autoremesher_core wheels in {args.wheel_dir}")
 
     manifest_template = (ADDON_DIR / "blender_manifest.toml").read_text()
     version = re.search(r'^version = "([^"]+)"', manifest_template, re.M).group(1)
@@ -61,10 +81,14 @@ def main() -> None:
     for wheel in wheels:
         by_platform.setdefault(blender_platform(wheel.name), []).append(wheel)
 
+    # The Blender 4.2-5.0 (cp311) zips carry a marker in the filename; the
+    # extensions platform needs them uploaded as a separate version anyway.
+    marker = "" if args.python_tag == "cp312" else "-blender42"
     for platform, platform_wheels in sorted(by_platform.items()):
-        zip_path = args.wheel_dir / f"autoremesher-{version}-{platform.replace('-', '_')}.zip"
+        zip_path = (args.wheel_dir /
+                    f"autoremesher-{version}{marker}-{platform.replace('-', '_')}.zip")
         manifest = patch_manifest(manifest_template, platform,
-                                  [w.name for w in platform_wheels])
+                                  [w.name for w in platform_wheels], args.python_tag)
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("blender_manifest.toml", manifest)
             for path in addon_files:

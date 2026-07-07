@@ -18,7 +18,8 @@ SYSTEM_TO_TAG = {"Darwin": "macos", "Windows": "windows", "Linux": "linux"}
 
 tag = f"{SYSTEM_TO_TAG[platform.system()]}_{MACHINE_TO_TAG[platform.machine().lower()]}"
 dist = Path(__file__).resolve().parent.parent / "dist"
-zips = sorted(dist.glob(f"autoremesher-*-{tag}.zip"))
+zips = [z for z in sorted(dist.glob(f"autoremesher-*-{tag}.zip"))
+        if "-blender42-" not in z.name]
 assert zips, f"no extension zip for {tag} in {dist}; run scripts/package_extension.py"
 
 bpy.ops.extensions.package_install_files(

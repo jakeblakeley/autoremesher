@@ -22,9 +22,17 @@ python3 scripts/package_extension.py
 This writes per-platform extension zips to `dist/`; install via Blender →
 Preferences → Extensions → Install from Disk. CI
 (`.github/workflows/blender-extension.yml`) builds wheels for
-windows-x64 / macos-arm64 / macos-x64 / linux-x64 with cibuildwheel and
-packages the zips: cp311 wheels for Blender 4.2 LTS–5.0 (Python 3.11) and a
-cp312 stable-ABI wheel for Blender 5.1+ (Python 3.13 and any later bump).
+windows-x64 / macos-arm64 / macos-x64 / linux-x64 with cibuildwheel.
+
+Blender refuses to install an extension containing wheels its Python can't
+load, so each zip carries a single Python generation:
+
+- `autoremesher-<version>-<platform>.zip` — cp312 stable-ABI wheel, for
+  Blender 5.1+ (Python 3.13 and any later bump).
+- `autoremesher-<version>-blender42-<platform>.zip` — cp311 wheel, for
+  Blender 4.2 LTS–5.0 (`--python-tag cp311`). On extensions.blender.org
+  these must be uploaded as a separate extension version with the matching
+  Blender version range.
 
 Headless smoke test (installs the zip into a throwaway extensions dir and
 remeshes Suzanne):
